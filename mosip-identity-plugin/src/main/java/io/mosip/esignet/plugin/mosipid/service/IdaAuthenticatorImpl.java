@@ -19,16 +19,14 @@ import io.mosip.esignet.api.util.ErrorConstants;
 import io.mosip.esignet.plugin.mosipid.dto.*;
 import io.mosip.esignet.plugin.mosipid.helper.AuthTransactionHelper;
 import io.mosip.kernel.core.http.ResponseWrapper;
+import io.mosip.signup.plugin.mosipid.dto.IdentityResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.jetbrains.annotations.NotNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.RequestEntity;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
 import org.springframework.web.client.RestTemplate;
@@ -89,6 +87,11 @@ public class IdaAuthenticatorImpl implements Authenticator {
     
     @Value("${mosip.esignet.authenticator.ida.client-id}")
     private String clientId;
+    @Value("${mosip.signup.idrepo.get-identity-fallback-path}")
+    private String getIdentityEndpointFallbackPath;
+
+    @Value("${mosip.signup.idrepo.get-identity.endpoint}")
+    private String getIdentityEndpoint;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -193,6 +196,13 @@ public class IdaAuthenticatorImpl implements Authenticator {
         log.info("Started to build send-otp request with transactionId : {} && clientId : {}",
                 sendOtpDto.getTransactionId(), clientId);
         try {
+            IdentityResponse identityResponse = getIdentityFromIdRepo(sendOtpDto.getIndividualId());
+            JsonNode identity = identityResponse.getIdentity();
+            String isPhoneVerified = identity.path("is_phone_verified").asText();
+            log.info("Phone verified status: {}", isPhoneVerified);
+            if (!"true".equalsIgnoreCase(isPhoneVerified)) {
+                throw new IllegalStateException("Phone number is not verified");
+            }
             IdaSendOtpRequest idaSendOtpRequest = new IdaSendOtpRequest();
             idaSendOtpRequest.setOtpChannel(sendOtpDto.getOtpChannels());
             idaSendOtpRequest.setIndividualId(sendOtpDto.getIndividualId());
@@ -204,6 +214,26 @@ public class IdaAuthenticatorImpl implements Authenticator {
             log.error("send-otp failed with clientId : {}", clientId, e);
         }
         throw new SendOtpException();
+    }
+    public IdentityResponse getIdentityFromIdRepo(String individualId) {
+        try {
+            String authToken = authTransactionHelper.getAuthToken();
+            String path = String.format(getIdentityEndpointFallbackPath, individualId);
+            String url = getIdentityEndpoint + path;
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set(HttpHeaders.COOKIE, "Authorization=" + authToken);
+            HttpEntity<Void> entity = new HttpEntity<>(headers);
+            ResponseEntity<ResponseWrapper<IdentityResponse>> response = restTemplate.exchange(url, HttpMethod.GET, entity,
+                    new ParameterizedTypeReference<ResponseWrapper<IdentityResponse>>() {}
+            );
+            if (response.getBody() == null || response.getBody().getResponse() == null) {
+                throw new IllegalStateException("Invalid ID Repo response");
+            }
+            return response.getBody().getResponse();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to call ID Repo", e);
+        }
     }
 
     @Override
