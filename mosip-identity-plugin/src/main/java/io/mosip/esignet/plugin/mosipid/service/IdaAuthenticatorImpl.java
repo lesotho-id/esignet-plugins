@@ -92,6 +92,7 @@ public class IdaAuthenticatorImpl implements Authenticator {
 
     @Value("${mosip.signup.idrepo.get-identity.endpoint}")
     private String getIdentityEndpoint;
+    private final String HANDLE_SEPARATOR = "@";
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -218,7 +219,9 @@ public class IdaAuthenticatorImpl implements Authenticator {
     public IdentityResponse getIdentityFromIdRepo(String individualId) {
         try {
             String authToken = authTransactionHelper.getAuthToken();
+            boolean isHandle = individualId.contains(HANDLE_SEPARATOR);
             String path = String.format(getIdentityEndpointFallbackPath, individualId);
+            if(isHandle) path += "&idType=HANDLE";
             String url = getIdentityEndpoint + path;
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
