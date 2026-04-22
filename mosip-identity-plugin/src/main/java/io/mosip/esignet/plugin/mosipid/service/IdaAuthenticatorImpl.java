@@ -197,13 +197,6 @@ public class IdaAuthenticatorImpl implements Authenticator {
         log.info("Started to build send-otp request with transactionId : {} && clientId : {}",
                 sendOtpDto.getTransactionId(), clientId);
         try {
-            IdentityResponse identityResponse = getIdentityFromIdRepo(sendOtpDto.getIndividualId());
-            JsonNode identity = identityResponse.getIdentity();
-            String isPhoneVerified = identity.path("is_phone_verified").asText();
-            log.info("Phone verified status: {}", isPhoneVerified);
-            if (!"true".equalsIgnoreCase(isPhoneVerified)) {
-                throw new IllegalStateException("Phone number is not verified");
-            }
             IdaSendOtpRequest idaSendOtpRequest = new IdaSendOtpRequest();
             idaSendOtpRequest.setOtpChannel(sendOtpDto.getOtpChannels());
             idaSendOtpRequest.setIndividualId(sendOtpDto.getIndividualId());
@@ -216,29 +209,6 @@ public class IdaAuthenticatorImpl implements Authenticator {
         }
         throw new SendOtpException();
     }
-    public IdentityResponse getIdentityFromIdRepo(String individualId) {
-        try {
-            String authToken = authTransactionHelper.getAuthToken();
-            boolean isHandle = individualId.contains(HANDLE_SEPARATOR);
-            String path = String.format(getIdentityEndpointFallbackPath, individualId);
-            if(isHandle) path += "&idType=HANDLE";
-            String url = getIdentityEndpoint + path;
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.set(HttpHeaders.COOKIE, "Authorization=" + authToken);
-            HttpEntity<Void> entity = new HttpEntity<>(headers);
-            ResponseEntity<ResponseWrapper<IdentityResponse>> response = restTemplate.exchange(url, HttpMethod.GET, entity,
-                    new ParameterizedTypeReference<ResponseWrapper<IdentityResponse>>() {}
-            );
-            if (response.getBody() == null || response.getBody().getResponse() == null) {
-                throw new IllegalStateException("Invalid ID Repo response");
-            }
-            return response.getBody().getResponse();
-        } catch (Exception e) {
-            throw new IllegalStateException("Failed to call ID Repo", e);
-        }
-    }
-
     @Override
     public boolean isSupportedOtpChannel(String channel) {
         return channel != null && otpChannels.contains(channel.toLowerCase());

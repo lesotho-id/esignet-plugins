@@ -7,6 +7,7 @@ package io.mosip.esignet.plugin.mosipid.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mosip.esignet.plugin.mosipid.dto.IdaKycAuthRequest;
 import io.mosip.esignet.plugin.mosipid.dto.IdaSendOtpRequest;
@@ -16,6 +17,8 @@ import io.mosip.esignet.api.dto.AuthChallenge;
 import io.mosip.esignet.api.dto.SendOtpResult;
 import io.mosip.esignet.api.exception.KycAuthException;
 import io.mosip.esignet.api.exception.SendOtpException;
+import io.mosip.esignet.plugin.mosipid.helper.AuthTransactionHelper;
+import io.mosip.kernel.core.http.ResponseWrapper;
 import io.mosip.kernel.core.util.CryptoUtil;
 import io.mosip.kernel.core.util.HMACUtils2;
 import io.mosip.kernel.crypto.jce.core.CryptoCore;
@@ -25,15 +28,15 @@ import io.mosip.kernel.partnercertservice.util.PartnerCertificateManagerUtil;
 import io.mosip.kernel.signature.dto.JWTSignatureRequestDto;
 import io.mosip.kernel.signature.dto.JWTSignatureResponseDto;
 import io.mosip.kernel.signature.service.SignatureService;
+import io.mosip.signup.plugin.mosipid.dto.IdentityResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.lang3.NotImplementedException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.Cacheable;
-import org.springframework.http.MediaType;
-import org.springframework.http.RequestEntity;
-import org.springframework.http.ResponseEntity;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestTemplate;
@@ -65,6 +68,11 @@ public class HelperService {
     public static final String INVALID_PARTNER_CERTIFICATE = "invalid_partner_cert";
     public static final String OIDC_PARTNER_APP_ID = "OIDC_PARTNER";
     public static final String BINDING_TRANSACTION = "bindingtransaction";
+    private final String HANDLE_SEPARATOR = "@";
+    @Value("${mosip.signup.idrepo.get-identity-fallback-path}")
+    private String getIdentityEndpointFallbackPath;
+    @Value("${mosip.signup.idrepo.get-identity.endpoint}")
+    private String getIdentityEndpoint;
     private static Base64.Encoder urlSafeEncoder;
     private static Base64.Decoder urlSafeDecoder;
     private static SecureRandom secureRandom;
@@ -107,6 +115,9 @@ public class HelperService {
 
     @Autowired
     private CryptoCore cryptoCore;
+    @Autowired
+    private AuthTransactionHelper authTransactionHelper;
+
 
     private Certificate idaPartnerCertificate;
 
@@ -140,6 +151,14 @@ public class HelperService {
 
     protected SendOtpResult sendOTP(String partnerId, String clientId, IdaSendOtpRequest idaSendOtpRequest)
             throws SendOtpException, JsonProcessingException {
+        IdentityResponse identityResponse = getIdentityFromIdRepo(idaSendOtpRequest.getIndividualId());
+        JsonNode identity = identityResponse.getIdentity();
+        String isPhoneVerified = identity.path("is_phone_verified").asText();
+        log.info("Phone verified status: {}", isPhoneVerified);
+        if (!"true".equalsIgnoreCase(isPhoneVerified)) {
+            throw new IllegalStateException("Phone number is not verified");
+        }
+
         idaSendOtpRequest.setId(sendOtpId);
         idaSendOtpRequest.setVersion(idaVersion);
         idaSendOtpRequest.setRequestTime(getUTCDateTime());
@@ -165,6 +184,28 @@ public class HelperService {
         }
         log.error("Error response received from IDA (send-otp) with status : {}", responseEntity.getStatusCode());
         throw new SendOtpException();
+    }
+    public IdentityResponse getIdentityFromIdRepo(String individualId) {
+        try {
+            String authToken = authTransactionHelper.getAuthToken();
+            boolean isHandle = individualId.contains(HANDLE_SEPARATOR);
+            String path = String.format(getIdentityEndpointFallbackPath, individualId);
+            if(isHandle) path += "&idType=HANDLE";
+            String url = getIdentityEndpoint + path;
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set(HttpHeaders.COOKIE, "Authorization=" + authToken);
+            HttpEntity<Void> entity = new HttpEntity<>(headers);
+            ResponseEntity<ResponseWrapper<IdentityResponse>> response = restTemplate.exchange(url, HttpMethod.GET, entity,
+                    new ParameterizedTypeReference<ResponseWrapper<IdentityResponse>>() {}
+            );
+            if (response.getBody() == null || response.getBody().getResponse() == null) {
+                throw new IllegalStateException("Invalid ID Repo response");
+            }
+            return response.getBody().getResponse();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to call ID Repo", e);
+        }
     }
 
     protected String getRequestSignature(String request) {
